@@ -48,5 +48,5 @@ export const VOICES = ["marin", "cedar", "alloy", "ash", "ballad", "coral", "ech
 // The mic is sampled for MIC_CHECK_MS; if no 50 ms window has an RMS above MIC_SILENT_RMS the line is treated as dead.
 // 0.0008 is well above digital silence (a muted or switched-off mic reads 0) and below a quiet room. UNVERIFIED on iPhone:
 // the measured peak is kept in localStorage "evc.micRms" so the first real sessions can calibrate it.
-export const MIC_CHECK_MS = 1000;
-export const MIC_SILENT_RMS = 0.0008;
+export const MIC_CHECK_MS = 2500;
+export const MIC_SILENT_RMS = 0.0003; // 29 Oct: 0.0008 false-alarmed on Vivek's iPhone in a quiet room

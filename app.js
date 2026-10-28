@@ -378,6 +378,7 @@ function setOrb(state) {
 function showErr(title, text, opts = {}) {
   $("errBox").hidden = false; $("errTitle").textContent = title; $("errText").textContent = text || "";
   $("btnErrResume").hidden = !opts.resume; $("btnErrRetry").hidden = !opts.retry; $("btnErrFinish").hidden = !opts.finish;
+  const anyway = $("btnErrAnyway"); if (anyway) anyway.hidden = !opts.anyway;
   document.body.dataset.err = opts.code || "error";
   $("btnEnd").hidden = true;
 }
@@ -423,7 +424,9 @@ function releaseDevices() {
 async function micLevelCheck(stream) {
   if (!actx || actx.state !== "running" || !stream) return { ok: true, rms: null };
   const src = actx.createMediaStreamSource(stream), an = actx.createAnalyser(); an.fftSize = 2048; src.connect(an);
-  const buf = new Float32Array(an.fftSize); let peak = 0; const t0 = performance.now();
+  const buf = new Float32Array(an.fftSize); let peak = 0;
+  await new Promise(r => setTimeout(r, 300)); // iOS: the route switch leaves the first few hundred ms silent
+  const t0 = performance.now();
   while (performance.now() - t0 < MIC_CHECK_MS) {
     an.getFloatTimeDomainData(buf); let sum = 0; for (const v of buf) sum += v * v;
     peak = Math.max(peak, Math.sqrt(sum / buf.length));
@@ -436,6 +439,7 @@ async function micLevelCheck(stream) {
 }
 
 // Called ONLY from a tap (Start / Quick 3 / Resume / Try again): that tap is the user gesture iOS needs for mic + audio.
+let skipMicCheckOnce = false;
 async function startSession(resumeRec = null, kind = "full") {
   lastResumeRec = resumeRec; lastKind = kind;
   location.hash = "#/session"; show("session"); clearErr(); setOrb("connecting");
@@ -456,14 +460,15 @@ async function startSession(resumeRec = null, kind = "full") {
     }
   }
   try { actx = new (window.AudioContext || window.webkitAudioContext)(); await actx.resume(); } catch (_) {}
-  if (mic) {
-    $("stateLabel").textContent = "Checking your mic…";
+  if (mic && !skipMicCheckOnce) {
+    $("stateLabel").textContent = "Checking your mic… say hello";
     const lv = await micLevelCheck(mic);
     if (!lv.ok) {
       releaseDevices();
-      return showErr("I can't hear you", "Check the mic switch (or the mute on your AirPods or headset), then tap Try again.", { retry: true, code: "mic_silent" });
+      return showErr("I can't hear you", "Say something while it checks, or check the mic switch (or the mute on your AirPods), then tap Try again. If you can hear yourself fine, tap Start anyway.", { retry: true, anyway: true, code: "mic_silent" });
     }
   }
+  skipMicCheckOnce = false;
   startMeter();
   await requestWakeLock();
   if (!MOCK && !navigator.onLine) { releaseDevices(); return showErr("No internet", "Connect to Wi-Fi or mobile data, then tap Try again.", { retry: true, code: "offline" }); }
@@ -593,6 +598,7 @@ function wireSession() {
     setTimeout(() => { if (Date.now() - armed >= 3000) { $("btnEnd").textContent = "End"; $("btnEnd").classList.remove("confirm"); } }, 3100);
   };
   $("btnErrRetry").onclick = () => startSession(lastResumeRec, lastKind);
+  $("btnErrAnyway").onclick = () => { skipMicCheckOnce = true; startSession(lastResumeRec, lastKind); };
   $("btnErrHome").onclick = () => { clearErr(); location.hash = "#/home"; };
   $("btnStart").onclick = async () => {
     const res = await store.findResumable().catch(() => null);
