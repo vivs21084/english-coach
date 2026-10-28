@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>English Coach</title>
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="English Coach">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- SIGN IN -->
+  <section id="scr-signin" class="screen" hidden>
+    <h1>English Coach</h1>
+    <p class="sub">Ten minutes of real talk a day. Sign in once on this phone.</p>
+    <div class="card">
+      <button class="big" id="btnGoogle">Sign in with Google</button>
+      <div class="or">or get a code by email</div>
+      <input id="inEmail" type="email" inputmode="email" autocomplete="email" placeholder="your email">
+      <button class="big secondary" id="btnSendCode">Email me a code</button>
+      <div id="codeBox" hidden>
+        <input id="inCode" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="10">
+        <button class="big" id="btnVerify">Sign in</button>
+      </div>
+      <p class="small" id="signinMsg"></p>
+      <p class="small">On iPhone, the home-screen app and Safari keep separate sign-ins. Type the code here, in the app, rather than tapping a link in the email.</p>
+    </div>
+  </section>
+
+  <!-- HOME -->
+  <section id="scr-home" class="screen" hidden>
+    <header class="top"><h1>English Coach</h1><span class="small" id="whoami"></span></header>
+
+    <div class="card install" id="installHint" hidden>
+      <b>Put this on your home screen</b>
+      <p>Tap <span class="kbd">Share</span> then <span class="kbd">Add to Home Screen</span>. It then opens like an app, full screen.</p>
+      <button class="secondary" id="btnInstallOk">Got it</button>
+    </div>
+
+    <div class="card resume" id="resumeCard" hidden>
+      <b>Your call dropped at <span id="resumeAt">0:00</span>.</b>
+      <p class="small">Pick it up where you left off. Same plan, nothing lost.</p>
+      <button class="big" id="btnResume">Resume call</button>
+      <button class="secondary" id="btnResumeFinish">Finish and see my review</button>
+    </div>
+
+    <div class="card scenario">
+      <div class="small upper">Today</div>
+      <div class="scTitle" id="scTitle">Your coach picks today's chat when you tap Start</div>
+      <div class="small" id="scGoal"></div>
+      <div class="small" id="scMeta"></div>
+    </div>
+
+    <button class="start" id="btnStart" aria-label="Start today's 10 minutes">
+      <span class="startIcon" aria-hidden="true"></span>
+      <span>Start</span>
+      <span class="small">10 minutes</span>
+    </button>
+    <button class="quick secondary" id="btnQuick3" aria-label="Quick 3 minutes">Quick 3 <span class="small">3 minutes, still counts</span></button>
+    <p class="small center engineLine">Voice: <span id="engineTag" class="engineTag">free</span></p>
+    <p class="small center" id="startNote"></p>
+
+    <div class="card">
+      <div class="row between">
+        <div><div class="big-num" id="streakNum">0</div><div class="small">day streak</div></div>
+        <div class="dots" id="weekDots" aria-label="This week"></div>
+      </div>
+      <p class="small" id="streakNote"></p>
+      <p class="weekline" id="weekLine">This week: loading…</p>
+    </div>
+    <div class="card pending" id="pendingCard" hidden>
+      <span id="pendingText"></span> <button class="secondary" id="btnRetryGrade">Try again</button>
+    </div>
+  </section>
+
+  <!-- SESSION -->
+  <section id="scr-session" class="screen session" hidden>
+    <div class="sessTop">
+      <span id="elapsed" class="elapsed">0:00</span>
+      <span id="tally" class="tally" title="Target phrases used">0 of 0</span>
+    </div>
+    <div class="orbWrap"><div id="orb" class="orb connecting"></div></div>
+    <div id="stateLabel" class="stateLabel">Connecting…</div>
+    <div id="stateSub" class="small center"></div>
+
+    <div id="walkBox" class="card walk" hidden aria-live="polite">
+      <b>Walk me through it</b>
+      <p id="walkTopic"></p>
+      <p class="small">Take your time. Map it first, then the steps. No clock.</p>
+    </div>
+
+    <div id="errBox" class="card err" hidden>
+      <b id="errTitle"></b>
+      <p id="errText" class="small"></p>
+      <button class="big" id="btnErrResume" hidden>Resume</button>
+      <button class="big secondary" id="btnErrRetry" hidden>Try again</button>
+      <button class="secondary" id="btnErrFinish" hidden>Finish and see my review</button>
+      <button class="secondary" id="btnErrHome">Back to home</button>
+    </div>
+
+    <div id="captions" class="captions" hidden aria-live="polite">
+      <div id="capCoach" class="cap coach"></div>
+      <div id="capYou" class="cap you"></div>
+    </div>
+
+    <div class="sessBottom">
+      <label class="toggle"><input type="checkbox" id="tglCaptions"> Captions</label>
+      <button class="end" id="btnEnd">End</button>
+    </div>
+    <audio id="remoteAudio" autoplay playsinline></audio>
+  </section>
+
+  <!-- REVIEW -->
+  <section id="scr-review" class="screen" hidden>
+    <header class="top"><h1>Your review</h1></header>
+    <div id="gradingBox" class="card center"><div class="spinner"></div><p>Checking how you went…</p></div>
+    <div id="gradeFail" class="card err" hidden>
+      <b>Saved, but the review did not come back.</b>
+      <p class="small" id="gradeFailText"></p>
+      <button class="big" id="btnRegrade">Try again</button>
+    </div>
+    <div id="reviewBody" hidden>
+      <div class="card"><p id="rvSummary"></p></div>
+      <div class="card"><h2>Nailed</h2><ul id="rvNailed" class="plain"></ul></div>
+      <div class="card" id="rvHeadCard"><h2>The one thing</h2><p id="rvHead"></p>
+        <details id="rvMore" hidden><summary>more</summary><ul id="rvMoreList" class="plain more"></ul></details></div>
+      <div class="card carry" id="rvCarryCard" hidden><p id="rvCarry"></p></div>
+      <p class="hook" id="rvHook" hidden></p>
+      <div class="card"><h2>One tip</h2><p id="rvTip"></p></div>
+      <div class="card"><h2>Fluency</h2><p id="rvFluency"></p></div>
+      <button class="orange big" id="btnRealPerson">I said one to a real person today</button>
+      <div class="card"><h2>Did the coach get these right?</h2>
+        <p class="small">Tap to agree or disagree. Your answer wins.</p>
+        <ul id="rvEvents" class="plain events"></ul></div>
+      <button class="big secondary" id="btnReviewHome">Done</button>
+    </div>
+  </section>
+
+  <!-- PHRASES -->
+  <section id="scr-phrases" class="screen" hidden>
+    <header class="top"><h1>Phrases</h1></header>
+    <div class="seg"><button id="segWeek" class="on">This week</button><button id="segAll">All phrases</button></div>
+    <div id="phWeek">
+      <div class="legend small">
+        <span class="st st-new">new</span><span class="st st-seen">heard</span><span class="st st-tried">tried</span><span class="st st-used">yours</span><span class="st st-automatic">automatic</span>
+      </div>
+      <ul id="weekBoard" class="plain phr"></ul>
+    </div>
+    <div id="phAll" hidden>
+      <input id="inSearch" type="search" placeholder="Search 690+ phrases" autocomplete="off">
+      <p class="small" id="searchCount"></p>
+      <ul id="bankList" class="plain phr"></ul>
+    </div>
+  </section>
+
+  <!-- STATS -->
+  <section id="scr-stats" class="screen" hidden>
+    <header class="top"><h1>Stats</h1></header>
+    <div class="card"><h2>Practice days a week</h2><p class="small">Last 10 weeks. Target 5.</p><div id="chDays" class="chart"></div></div>
+    <div class="card"><h2>Phrases that are yours</h2>
+      <div class="row"><div class="big-num" id="yoursNum">–</div><div class="small" id="yoursSub">used or automatic</div></div></div>
+    <div class="card"><h2>Phrases you nailed</h2><p class="small">Per week, from your reviews.</p><div id="chYours" class="chart"></div></div>
+    <div class="card" id="scoreCard" hidden><h2>Walk me through it</h2><p class="small">Your weekly work talk, scored out of 50. Goal 42.</p><div id="chScore" class="chart"></div></div>
+    <div class="card"><h2>Words a minute</h2><p class="small">Weekly average.</p><div id="chWpm" class="chart"></div></div>
+    <p class="small center"><button class="linkish" id="btnSignOut">Sign out</button></p>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="scr-settings" class="screen" hidden>
+    <header class="top"><h1>Settings</h1></header>
+    <form id="setForm" class="card" autocomplete="off">
+      <label class="fld">Your name<input id="setName" maxlength="40"></label>
+      <label class="fld">Coach's name<input id="setCoach" maxlength="30" placeholder="Jo"></label>
+      <label class="fld">Coach's voice<select id="setVoice"></select></label>
+      <div class="fld">Model
+        <div class="seg" role="radiogroup">
+          <label class="radio"><input type="radio" name="setModel" value="gpt-realtime-2.1"> Full (best)</label>
+          <label class="radio"><input type="radio" name="setModel" value="gpt-realtime-2.1-mini"> Mini (cheaper)</label>
+        </div></div>
+      <div class="fld">Voice engine
+        <div class="seg" role="radiogroup">
+          <label class="radio"><input type="radio" name="setEngine" value="gemini"> Gemini (free)</label>
+          <label class="radio"><input type="radio" name="setEngine" value="openai"> OpenAI (paid)</label>
+        </div><span class="small">Free: Google may use free-tier audio to improve its products. Paid: about US$4-7 a month, not reviewed by people. Model applies to the paid voice only.</span></div>
+      <label class="fld">What the free coach may know<textarea id="setAboutPublic" rows="4" maxlength="800" placeholder="One fact per line. First names and hobbies only, e.g. Daughter Reya, tennis on Wednesdays"></textarea><span class="small">Google may review free-tier audio, so no addresses, employers, money or health here.</span></label>
+      <label class="fld">Minutes per session<input id="setMinutes" type="number" min="3" max="15" step="1" inputmode="numeric"></label>
+      <label class="fld">The fixed moment I do this<input id="setTrigger" maxlength="120" placeholder="e.g. after I park at work, before I go in"></label>
+      <label class="fld">Nudge time<input id="setNudge" type="time"></label>
+      <label class="toggle"><input type="checkbox" id="setRealTap"> Show the "real person today" tap on the review</label>
+      <button class="big" id="btnSaveSettings" type="submit">Save</button>
+      <p class="small" id="setMsg" aria-live="polite"></p>
+    </form>
+  </section>
+
+  <nav id="tabs" class="tabs" hidden>
+    <a href="#/home" data-tab="home">Home</a>
+    <a href="#/phrases" data-tab="phrases">Phrases</a>
+    <a href="#/stats" data-tab="stats">Stats</a>
+    <a href="#/settings" data-tab="settings">Settings</a>
+  </nav>
+  <div id="mockBadge" class="mockBadge" hidden>MOCK</div>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
