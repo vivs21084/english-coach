@@ -24,6 +24,10 @@
 //                      think=1 (the 2nd coach turn thinks aloud "Thinking Process: …": muted, never graded), think=2 (same with "/thought"),
 //                      (v2.2: userended=1's end_session carries quote "Talk later", the coach's own words: still refused)
 //                      remintfail=1 (the reconnect mint fails with 500: the client ends and grades, end_reason "dropped").
+// v0.4 sign-in: the app signs in anonymously on load (window.__mock.anonSignIns counts the calls; user id window.__mock.userId).
+//              approved=0 (v_my_access.allowlisted false: Home shows the waiting card with the device code, Start disabled,
+//                      and mint-session answers 403 "no profile: email not in public.allowlist"); default approved.
+//              anonfail=1 (signInAnonymously fails: Home shows the one-line Retry). Set window.__mock.approved = true to approve.
 // nohangup=1 now mints a plan with no final note (old plan), so only the hard stop can end the call.
 // The coach says goodbye + calls end_session only once the client has sent the "final" producer note.
 // Everything the client sends is recorded in window.__mock for tests.
@@ -44,7 +48,8 @@ const EARLY_END = q.get("earlyend") === "1";
 const MUTE = q.get("mute") === "1";
 const NOTE_ECHO = q.get("noteecho") === "1";
 let MINT_KIND = "full";
-const M = (window.__mock = { sent: [], emitted: [], calls: {}, answered: {}, connects: 0, log: [], mintBodies: [], profileSaves: [], sentMs: [] });
+const M = (window.__mock = { sent: [], emitted: [], calls: {}, answered: {}, connects: 0, log: [], mintBodies: [], profileSaves: [], sentMs: [],
+  anonSignIns: 0, userId: "3fa85f64-5717-4562-b3fc-2c963f66afa6", approved: q.get("approved") !== "0", deviceLabelSaves: [], linkEmails: [], accessReads: 0 });
 
 // Script: coach line, then learner line, with tool calls attached.
 // tools: [{name, args}] are emitted at the start of the coach turn that follows the learner's use.
@@ -221,6 +226,7 @@ export function mockConnect() {
 
 export async function mockMint(resumeId, kind = "full") {
   const j = await (await fetch("eval/mock-mint.json", { cache: "no-store" })).json();
+  if (!M.approved) throw Object.assign(new Error("no profile: email not in public.allowlist"), { status: 403, body: { error: "no profile: email not in public.allowlist" } });
   if (q.get("quota") === "1") throw Object.assign(new Error("Free voice is done for today"), { status: 429, body: { error: "Free voice is done for today", cap: "free_tier" } });
   if (resumeId && GEMINI && q.get("remintfail") === "1") throw Object.assign(new Error("mint-session failed (500)"), { status: 500 });
   if (GEMINI) { // CONTRACT v2.0 §2.0.2 shape
@@ -252,7 +258,14 @@ export async function mockGrade(payload) {
 // ---- fake data layer ---------------------------------------------------------------------------
 function isoDay(d) { const x = new Date(d); x.setMinutes(x.getMinutes() - x.getTimezoneOffset()); return x.toISOString().slice(0, 10); }
 export const mockData = {
-  user: { email: "mock@example.com", id: "mock-user" },
+  async signInAnonymously() {
+    M.anonSignIns++;
+    if (q.get("anonfail") === "1" && M.anonSignIns === 1) throw Object.assign(new Error("Anonymous sign-ins are disabled"), { status: 422 });
+    return { id: M.userId, email: "", is_anonymous: true };
+  },
+  async access() { M.accessReads++; return { user_id: M.userId, allowlisted: M.approved, is_anonymous: true, device_label: M.deviceLabel || null, created_at: new Date().toISOString() }; },
+  async saveDeviceLabel(label) { M.deviceLabelSaves.push(label); M.deviceLabel = label; return { error: null }; },
+  async linkEmail(email) { M.linkEmails.push(email); return { error: null }; },
   async dailyLog(fromIso) {
     const rows = [];
     const today = new Date();

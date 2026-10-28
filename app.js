@@ -1,5 +1,5 @@
 // app.js: router + screens for English Coach. Single page (hash routes) so iOS does not re-ask for the mic.
-import { SUPABASE_URL, SUPABASE_ANON_KEY, FUNCTIONS_URL, DAILY_TARGET_DAYS, SPEECH_LANG, ALLOWED_EMAILS,
+import { SUPABASE_URL, SUPABASE_ANON_KEY, FUNCTIONS_URL, DAILY_TARGET_DAYS, SPEECH_LANG,
   MODELS, DEFAULT_MODEL, VOICES, MIC_CHECK_MS, MIC_SILENT_RMS, VOICE_ENGINES, DEFAULT_ENGINE, FREE_LIMIT_MSG } from "./config.js";
 import { CoachCall, webrtcConnect, TokenExpiredError, NetworkError, fmt } from "./realtime.js";
 import { GeminiCall, QuotaError } from "./gemini-live.js";
@@ -27,14 +27,32 @@ const isFreeQuota = (e) => e instanceof QuotaError || (e && e.status === 429 && 
   /quota|resource.?exhausted|free voice/i.test(String(e.message || ""))));
 const api = {
   async init() {
-    if (MOCK) { user = mockData.user; return; }
-    try {
+    if (!MOCK) try {
       const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
       sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-      const { data: { session } } = await sb.auth.getSession();
-      user = session ? session.user : null;
-      sb.auth.onAuthStateChange((_e, s) => { const was = !!user; user = s ? s.user : null; if (was !== !!user) route(); });
     } catch (e) { console.warn("Supabase did not load", e); }
+    await ensureUser();
+    if (sb) sb.auth.onAuthStateChange((_e, s) => {
+      const was = user && user.id; user = s ? s.user : null;
+      if (was !== (user && user.id)) { access = null; route(); }
+    });
+  },
+  // v_my_access (migration 0005): {user_id, allowlisted, is_anonymous, device_label, created_at}, one row for the signed-in user.
+  async access() {
+    if (MOCK) return mockData.access();
+    const { data, error } = await sb.from("v_my_access").select("user_id,allowlisted,is_anonymous,device_label,created_at").maybeSingle();
+    if (error) throw error; return data || null;
+  },
+  async saveDeviceLabel(device_label) {
+    if (MOCK) return mockData.saveDeviceLabel(device_label);
+    const { error } = await sb.from("profiles").update({ device_label }).eq("user_id", user.id);
+    return { error };
+  },
+  // Optional recovery: attach an email to the anonymous user. Supabase emails a confirmation link; nothing waits on it.
+  async linkEmail(email) {
+    if (MOCK) return mockData.linkEmail(email);
+    const { error } = await sb.auth.updateUser({ email }, { emailRedirectTo: location.origin + location.pathname });
+    return { error };
   },
   async token() {
     if (MOCK) return "mock";
@@ -139,16 +157,16 @@ const phraseText = (id, fallback) => (bankById.get(id) || {}).text || fallback |
 // ---------------------------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------------------------
-const SCREENS = ["signin", "home", "session", "review", "phrases", "stats", "settings"];
+const SCREENS = ["home", "session", "review", "phrases", "stats", "settings"];
 function show(name) {
   for (const s of SCREENS) $("scr-" + s).hidden = s !== name;
-  $("tabs").hidden = name === "session" || name === "signin";
+  $("tabs").hidden = name === "session";
   for (const a of document.querySelectorAll(".tabs a")) a.classList.toggle("on", a.dataset.tab === name);
   window.scrollTo(0, 0);
 }
 async function route() {
   const name = (location.hash.replace(/^#\/?/, "") || "home").split("?")[0];
-  if (!user && !MOCK) return show("signin");
+  if (!user && name !== "home") { location.hash = "#/home"; return; } // not connected yet: Home shows the Retry line
   if (call && !call.closed && name !== "session") { location.hash = "#/session"; return; } // never leave a live call
   if (name === "session") return show("session");
   if (name === "review") { show("review"); return renderReview(currentReviewId || (await store.lastGraded() || {}).session_id); }
@@ -160,28 +178,94 @@ async function route() {
 window.addEventListener("hashchange", route);
 
 // ---------------------------------------------------------------------------------------------
-// Sign in (Google, or a 6-digit email code that works inside the home-screen app)
+// Sign-in: none on screen. First launch signs in anonymously and the session is kept for good
+// (persistSession + autoRefreshToken). An existing email session (Vivek's Mac Chrome) is kept as it is.
+// New devices wait for approval: v_my_access.allowlisted is false until Claude approves the device code.
 // ---------------------------------------------------------------------------------------------
-function wireSignin() {
-  const msg = (t) => { $("signinMsg").textContent = t; };
-  $("btnGoogle").onclick = async () => {
-    if (!sb) return msg("Could not load sign-in. Check your connection.");
-    const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.origin + location.pathname } });
-    if (error) msg("Error: " + error.message);
+let authError = null, access = null, pollT = 0;
+const ACCESS_POLL_MS = 20000;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isStandalone = () => navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
+export const deviceCode = (u) => String((u && u.id) || "").replace(/-/g, "").slice(0, 6).toUpperCase();
+function defaultLabel() {
+  if (isIOS()) return "Vivek's iPhone";
+  const p = String((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "");
+  return /android/i.test(navigator.userAgent) ? "Android phone" : /mac/i.test(p) ? "Mac" : /win/i.test(p) ? "Windows PC" : /linux/i.test(p) ? "Linux" : "This device";
+}
+const isAnon = () => !!user && (user.is_anonymous === true || !user.email);
+const deviceLabel = () => (access && access.device_label) || LS.get("deviceLabel") || defaultLabel();
+const isApproved = () => !!user && (!access || access.allowlisted !== false);
+
+async function ensureUser() {
+  authError = null;
+  try {
+    if (MOCK) { user = user || await mockData.signInAnonymously(); return user; }
+    if (!sb) throw new Error("Could not load the app's sign-in library");
+    const { data: { session } } = await sb.auth.getSession();
+    if (session) { user = session.user; return user; }
+    const { data, error } = await sb.auth.signInAnonymously();
+    if (error) throw error;
+    user = (data && (data.user || (data.session && data.session.user))) || null;
+    if (!user) throw new Error("No session came back");
+    return user;
+  } catch (e) { console.warn("sign-in", e); authError = e; user = null; return null; }
+}
+
+// Reads v_my_access. No row = not approved yet. An error (view not there yet) does not block: mint-session still gates with 403.
+async function loadAccess() {
+  if (!user) { access = null; return; }
+  try {
+    const a = await api.access();
+    access = a ? { ...a, allowlisted: a.allowlisted === true } : { allowlisted: false, device_label: null, is_anonymous: isAnon() };
+  } catch (e) { console.warn("v_my_access", e.message || e); access = { allowlisted: true, unknown: true, device_label: null }; }
+  if (!access.unknown && !access.device_label && isAnon()) { // give the device a name Claude can see next to the code
+    const label = LS.get("deviceLabel") || defaultLabel();
+    access.device_label = label;
+    api.saveDeviceLabel(label).catch(() => {});
+  }
+}
+async function saveLabel(label) {
+  label = String(label || "").trim().slice(0, 40) || defaultLabel();
+  LS.set("deviceLabel", label);
+  if (access) access.device_label = label;
+  let r; try { r = await api.saveDeviceLabel(label) || {}; } catch (e) { r = { error: e }; }
+  paintWho();
+  return r;
+}
+function paintWho() { $("whoami").textContent = !user ? "" : isAnon() ? deviceLabel() : user.email; }
+
+// Waiting card + Start/Quick 3 state. Polls v_my_access every 20 s until approved.
+function paintAccess() {
+  const ok = isApproved();
+  $("btnStart").disabled = !ok; $("btnQuick3").disabled = !ok;
+  document.body.dataset.access = !user ? "none" : ok ? "approved" : "waiting";
+  $("waitCard").hidden = !user || ok;
+  if (!user || ok) { stopPoll(); return; }
+  $("devCode").textContent = deviceCode(user);
+  if (document.activeElement !== $("waitLabel")) $("waitLabel").value = deviceLabel();
+  $("waitInstall").hidden = !(isIOS() && !isStandalone());
+  $("btnSaveLabel").onclick = async () => {
+    $("waitMsg").textContent = "Saving…";
+    const r = await saveLabel($("waitLabel").value);
+    $("waitMsg").textContent = r.error ? "Could not save the name. Try again." : "Saved.";
   };
-  $("btnSendCode").onclick = async () => {
-    const email = $("inEmail").value.trim().toLowerCase();
-    if (!email) return msg("Type your email first.");
-    if (ALLOWED_EMAILS.length && !ALLOWED_EMAILS.includes(email)) return msg("This email is not on the list for this app.");
-    if (!sb) return msg("Could not load sign-in. Check your connection.");
-    const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: false, emailRedirectTo: location.origin + location.pathname } });
-    if (error) return msg("Error: " + error.message);
-    $("codeBox").hidden = false; msg("Check your email for the code and type it here.");
-  };
-  $("btnVerify").onclick = async () => {
-    const email = $("inEmail").value.trim().toLowerCase(), token = $("inCode").value.trim();
-    const { error } = await sb.auth.verifyOtp({ email, token, type: "email" });
-    msg(error ? "That code did not work: " + error.message : "Signed in.");
+  if (!pollT) pollT = setInterval(async () => {
+    await loadAccess();
+    if (isApproved()) { stopPoll(); paintAccess(); if (!$("scr-home").hidden) renderHome(); }
+  }, ACCESS_POLL_MS);
+}
+function stopPoll() { if (pollT) { clearInterval(pollT); pollT = 0; } }
+
+function paintAuthError() {
+  $("authErr").hidden = !!user;
+  if (user) return;
+  $("authErrText").textContent = navigator.onLine ? "Could not connect just now." : "You're offline.";
+  $("btnAuthRetry").onclick = async () => {
+    if (!sb && !MOCK) return location.reload();
+    $("btnAuthRetry").disabled = true; $("authErrText").textContent = "Connecting…";
+    await ensureUser(); access = null;
+    $("btnAuthRetry").disabled = false;
+    route();
   };
 }
 
@@ -201,13 +285,14 @@ export function computeStreak(practisedSet, today) {
 }
 
 async function renderHome() {
-  $("whoami").textContent = user ? user.email : "";
   $("mockBadge").hidden = !MOCK;
-  // Install hint: iOS Safari only, not already standalone, shown once.
-  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const standalone = navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
-  if (isIOS && !standalone && !LS.get("installHintShown")) { $("installHint").hidden = false; LS.set("installHintShown", true); }
+  // Install hint: iOS Safari only, not already standalone, shown once (nothing blocks it now: no sign-in screen).
+  if (isIOS() && !isStandalone() && !LS.get("installHintShown")) { $("installHint").hidden = false; LS.set("installHintShown", true); }
   $("btnInstallOk").onclick = () => { $("installHint").hidden = true; };
+  paintAuthError();
+  if (!user) { paintWho(); paintAccess(); return; }
+  if (!access) await loadAccess();
+  paintWho(); paintAccess();
 
   // Today's scenario: v_today_plan first (known before Start), else the last plan this phone saw.
   let tp = null;
@@ -398,8 +483,11 @@ async function startSession(resumeRec = null, kind = "full") {
       if (isFreeQuota(e)) return showErr("Free voice limit", FREE_LIMIT_MSG, { code: "free_quota" });
       if (e instanceof TokenExpiredError) return showErr("The session key expired", "Tap Try again for a fresh one.", { retry: true, code: "token_expired" });
       if (e instanceof NetworkError) return showErr("No connection", e.message + ". Check your internet and tap Try again.", { retry: true, code: "offline" });
-      if (e.status === 401) return showErr("Signed out", "Sign in again, then start.", { code: "signed_out" });
-      if (e.status === 403) return showErr("Not on the list", "This account is not allowed to use the coach.", { code: "forbidden" });
+      if (e.status === 401) { await ensureUser(); return showErr("Not connected", "Tap Try again to reconnect.", { retry: true, code: "signed_out" }); }
+      if (e.status === 403) { // not approved yet ("no profile: email not in public.allowlist"): back to Home and the waiting card
+        access = { ...(access || {}), allowlisted: false, unknown: false };
+        clearErr(); document.body.dataset.err = "not_approved"; location.hash = "#/home"; return;
+      }
       if (e.status === 429) return showErr("That's enough for today", "Two sessions a day is the limit. Come back tomorrow.", { code: "daily_cap" });
       return showErr("Could not start", e.message || String(e), { retry: true, code: "start_failed" });
     }
@@ -711,8 +799,6 @@ async function renderStats() {
     $("scoreCard").hidden = !sl.length;
     if (sl.length) $("chScore").innerHTML = trend(sl.map(r => Number(r.score_total)), sl.map(r => { const d = dayIso(new Date(r.scored_at)); return d.slice(8, 10) + "/" + d.slice(5, 7); }), { target: 42 });
   } catch (e) { $("scoreCard").hidden = true; }
-  $("btnSignOut").hidden = MOCK;
-  $("btnSignOut").onclick = async () => { if (sb) await sb.auth.signOut(); location.hash = "#/home"; };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -735,6 +821,7 @@ async function renderSettings() {
   $("setTrigger").value = pr.trigger_note || "";
   $("setNudge").value = String(pr.nudge_time || "07:30").slice(0, 5);
   $("setRealTap").checked = LS.get("showRealPerson", true) !== false;
+  renderDevice();
   $("setForm").onsubmit = async (e) => {
     e.preventDefault();
     const mins = Math.min(15, Math.max(3, Math.round(Number($("setMinutes").value) || 10)));
@@ -760,11 +847,33 @@ async function renderSettings() {
   };
 }
 
+function renderDevice() {
+  const dm = (t) => { $("devMsg").textContent = t; };
+  $("setDevCode").textContent = user ? deviceCode(user) : "–";
+  $("setAccess").textContent = !user ? "Not connected" : isApproved() ? "Approved" : "Waiting for approval";
+  $("setDevLabel").value = deviceLabel();
+  $("btnSaveDevLabel").onclick = async () => { dm("Saving…"); const r = await saveLabel($("setDevLabel").value); dm(r.error ? "Could not save the name. Try again." : "Saved."); };
+  const anon = isAnon();
+  $("linkEmailBox").hidden = !user || !anon;
+  $("setSignedIn").hidden = !user || anon;
+  if (user && !anon) $("setSignedIn").textContent = "Signed in with " + user.email;
+  if (user && user.new_email) $("linkMsg").textContent = "Confirmation sent to " + user.new_email + ". Open the link in that email.";
+  $("btnLinkEmail").onclick = async () => {
+    const email = $("inLinkEmail").value.trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { $("linkMsg").textContent = "Type a full email address first."; return; }
+    $("btnLinkEmail").disabled = true; $("linkMsg").textContent = "Sending…";
+    let r; try { r = await api.linkEmail(email) || {}; } catch (e) { r = { error: e }; }
+    $("btnLinkEmail").disabled = false;
+    $("linkMsg").textContent = r.error ? "Could not send: " + (r.error.message || r.error) + ". The app works without it."
+      : "Check " + email + " and open the confirmation link. The app keeps working while you wait.";
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------------------------
 async function boot() {
-  wireSignin(); wireSession();
+  wireSession();
   if ("serviceWorker" in navigator && !new URLSearchParams(location.search).has("nosw")) navigator.serviceWorker.register("sw.js").catch(() => {});
   await api.init();
   loadBank();

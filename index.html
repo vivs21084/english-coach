@@ -17,32 +17,31 @@
 <body>
 <div id="app">
 
-  <!-- SIGN IN -->
-  <section id="scr-signin" class="screen" hidden>
-    <h1>English Coach</h1>
-    <p class="sub">Ten minutes of real talk a day. Sign in once on this phone.</p>
-    <div class="card">
-      <button class="big" id="btnGoogle">Sign in with Google</button>
-      <div class="or">or get a code by email</div>
-      <input id="inEmail" type="email" inputmode="email" autocomplete="email" placeholder="your email">
-      <button class="big secondary" id="btnSendCode">Email me a code</button>
-      <div id="codeBox" hidden>
-        <input id="inCode" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="10">
-        <button class="big" id="btnVerify">Sign in</button>
-      </div>
-      <p class="small" id="signinMsg"></p>
-      <p class="small">On iPhone, the home-screen app and Safari keep separate sign-ins. Type the code here, in the app, rather than tapping a link in the email.</p>
-    </div>
-  </section>
-
   <!-- HOME -->
   <section id="scr-home" class="screen" hidden>
     <header class="top"><h1>English Coach</h1><span class="small" id="whoami"></span></header>
 
     <div class="card install" id="installHint" hidden>
-      <b>Put this on your home screen</b>
-      <p>Tap <span class="kbd">Share</span> then <span class="kbd">Add to Home Screen</span>. It then opens like an app, full screen.</p>
+      <b>Add to Home Screen</b>
+      <p>Tap <span class="kbd">Share</span> → <span class="kbd">Add to Home Screen</span>. It then opens like an app, full screen.</p>
       <button class="secondary" id="btnInstallOk">Got it</button>
+    </div>
+
+    <div class="card err" id="authErr" hidden>
+      <span id="authErrText">Could not connect just now.</span>
+      <button class="secondary" id="btnAuthRetry">Retry</button>
+    </div>
+
+    <div class="card wait" id="waitCard" hidden>
+      <b>Waiting for approval</b>
+      <div class="small">Your device code</div>
+      <div class="devcode" id="devCode">------</div>
+      <p>Tell Claude this code.</p>
+      <p class="small">Start opens by itself once this device is approved. It checks every 20 seconds.</p>
+      <p class="small" id="waitInstall" hidden>Add the app to your Home Screen first (Share → Add to Home Screen), open it from the icon, and send the code shown there. Safari and the home-screen app count as two devices.</p>
+      <label class="fld">This device<input id="waitLabel" maxlength="40" autocomplete="off"></label>
+      <button class="secondary" id="btnSaveLabel">Save name</button>
+      <p class="small" id="waitMsg" aria-live="polite"></p>
     </div>
 
     <div class="card resume" id="resumeCard" hidden>
@@ -59,12 +58,12 @@
       <div class="small" id="scMeta"></div>
     </div>
 
-    <button class="start" id="btnStart" aria-label="Start today's 10 minutes">
+    <button class="start" id="btnStart" disabled aria-label="Start today's 10 minutes">
       <span class="startIcon" aria-hidden="true"></span>
       <span>Start</span>
       <span class="small">10 minutes</span>
     </button>
-    <button class="quick secondary" id="btnQuick3" aria-label="Quick 3 minutes">Quick 3 <span class="small">3 minutes, still counts</span></button>
+    <button class="quick secondary" id="btnQuick3" disabled aria-label="Quick 3 minutes">Quick 3 <span class="small">3 minutes, still counts</span></button>
     <p class="small center engineLine">Voice: <span id="engineTag" class="engineTag">free</span></p>
     <p class="small center" id="startNote"></p>
 
@@ -170,12 +169,28 @@
     <div class="card"><h2>Phrases you nailed</h2><p class="small">Per week, from your reviews.</p><div id="chYours" class="chart"></div></div>
     <div class="card" id="scoreCard" hidden><h2>Walk me through it</h2><p class="small">Your weekly work talk, scored out of 50. Goal 42.</p><div id="chScore" class="chart"></div></div>
     <div class="card"><h2>Words a minute</h2><p class="small">Weekly average.</p><div id="chWpm" class="chart"></div></div>
-    <p class="small center"><button class="linkish" id="btnSignOut">Sign out</button></p>
   </section>
 
   <!-- SETTINGS -->
   <section id="scr-settings" class="screen" hidden>
     <header class="top"><h1>Settings</h1></header>
+    <div class="card" id="devCard">
+      <div class="row between">
+        <div><div class="small">Device code</div><div class="devcode sm" id="setDevCode">–</div></div>
+        <div class="small" id="setAccess"></div>
+      </div>
+      <label class="fld">This device<input id="setDevLabel" maxlength="40" autocomplete="off"></label>
+      <button class="secondary" id="btnSaveDevLabel" type="button">Save device name</button>
+      <p class="small" id="devMsg" aria-live="polite"></p>
+      <p class="small" id="setSignedIn" hidden></p>
+      <details id="linkEmailBox">
+        <summary>Link an email (for recovery)</summary>
+        <p class="small">Optional. If this phone is lost or the app is removed, the email brings your history back. Nothing waits on it.</p>
+        <input id="inLinkEmail" type="email" inputmode="email" autocomplete="email" placeholder="your email">
+        <button class="secondary" id="btnLinkEmail" type="button">Send confirmation link</button>
+        <p class="small" id="linkMsg" aria-live="polite"></p>
+      </details>
+    </div>
     <form id="setForm" class="card" autocomplete="off">
       <label class="fld">Your name<input id="setName" maxlength="40"></label>
       <label class="fld">Coach's name<input id="setCoach" maxlength="30" placeholder="Jo"></label>
