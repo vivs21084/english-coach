@@ -464,8 +464,10 @@ async function startSession(resumeRec = null, kind = "full") {
     $("stateLabel").textContent = "Checking your mic… say hello";
     const lv = await micLevelCheck(mic);
     if (!lv.ok) {
-      releaseDevices();
-      return showErr("I can't hear you", "Say something while it checks, or check the mic switch (or the mute on your AirPods), then tap Try again. If you can hear yourself fine, tap Start anyway.", { retry: true, anyway: true, code: "mic_silent" });
+      // 29 Oct: never block on this check (it false-alarmed on Vivek's iPhone); warn and carry on.
+      console.warn("mic level check: silent", lv.rms);
+      $("stateLabel").textContent = "Couldn't hear the mic in the check; connecting anyway";
+      document.body.dataset.micWarn = "silent";
     }
   }
   skipMicCheckOnce = false;
