@@ -440,7 +440,47 @@ async function micLevelCheck(stream) {
 
 // Called ONLY from a tap (Start / Quick 3 / Resume / Try again): that tap is the user gesture iOS needs for mic + audio.
 let skipMicCheckOnce = false;
+
+// One live call across every window/tab of the app (Web Locks; falls back to a localStorage heartbeat).
+async function acquireCallLock() {
+  if (navigator.locks && navigator.locks.request) {
+    let releaseFn = null;
+    const got = await new Promise((resolve) => {
+      navigator.locks.request("evc-live-call", { ifAvailable: true }, (lock) => {
+        if (!lock) { resolve(false); return; }
+        return new Promise((r) => { releaseFn = r; resolve(true); });
+      }).catch(() => resolve(false));
+    });
+    return got ? () => { if (releaseFn) { releaseFn(); releaseFn = null; } } : null;
+  }
+  const key = "evc.liveCall", me = Math.random().toString(36).slice(2);
+  const cur = JSON.parse(localStorage.getItem(key) || "null");
+  if (cur && cur.id !== me && Date.now() - cur.at < 6000) return null;
+  const beat = () => localStorage.setItem(key, JSON.stringify({ id: me, at: Date.now() }));
+  beat(); const t = setInterval(beat, 2000);
+  return () => { clearInterval(t); const c = JSON.parse(localStorage.getItem(key) || "null"); if (c && c.id === me) localStorage.removeItem(key); };
+}
+
+let starting = false;
 async function startSession(resumeRec = null, kind = "full") {
+  // 31 Oct: single flight. A second tap while a start is running (or a call is live) used to open a second voice session.
+  if (starting || (call && !call.closed)) { (window.__callLog = window.__callLog || []).push("start ignored: already starting or live"); return; }
+  starting = true;
+  try {
+    // 31 Oct: one call across ALL windows of the app, taken BEFORE the server is contacted (two Safari tabs share storage;
+    // a second tab resumed the first tab's live session and both talked at once). Held for the call's whole life.
+    if (!callLockRelease) callLockRelease = await acquireCallLock();
+    if (!callLockRelease) {
+      location.hash = "#/session"; show("session");
+      return showErr("Already talking", "This app is open in another window and that one is in a session. Close the other window (or finish that session), then tap Try again.", { retry: true, code: "other_window" });
+    }
+    await startSessionInner(resumeRec, kind);
+    if (!call || call.closed) releaseCallLock(); // the start failed: free the lock
+  } finally { starting = false; }
+}
+let callLockRelease = null;
+function releaseCallLock() { if (callLockRelease) { try { callLockRelease(); } catch (_) {} callLockRelease = null; } }
+async function startSessionInner(resumeRec = null, kind = "full") {
   lastResumeRec = resumeRec; lastKind = kind;
   location.hash = "#/session"; show("session"); clearErr(); setOrb("connecting");
   $("elapsed").textContent = fmt(resumeRec ? resumeRec.elapsed_ms || 0 : 0);
@@ -525,6 +565,8 @@ async function runCall(mint, resumeRec) {
   rec.engine = engine; LS.set("voiceEngine", engine); document.body.dataset.engine = engine;
   await store.patchSession(sid, { engine });
   const Call = engine === "gemini" ? GeminiCall : CoachCall;
+  if (call && !call.closed) { try { call.cleanup(); } catch (_) {} } // never two calls at once
+  window.__callsCreated = (window.__callsCreated || 0) + 1;
   call = new Call({
     mint: { ...mint, plan: rec.plan }, connect: MOCK ? mockConnect : webrtcConnect, micStream: mic, audioEl: $("remoteAudio"),
     audioCtx: actx, WebSocketImpl: MOCK ? MockGeminiWS : undefined,
@@ -546,10 +588,12 @@ async function runCall(mint, resumeRec) {
       caption: (role, text) => { $(role === "user" ? "capYou" : "capCoach").textContent = text; walk.caption(role, text); },
       log: (m) => { (window.__callLog = window.__callLog || []).push(m); },
       ended: async (reason, ms) => {
+        releaseCallLock();
         clearTimeout(patchT); await store.patchSession(sid, { ...patchBuf, elapsed_ms: ms, status: "ended", end_reason: reason, ended_at: Date.now() });
         walk.off(); releaseDevices(); call = null; finishAndGrade(sid);
       },
       dropped: async (reason, ms) => {
+        releaseCallLock();
         clearTimeout(patchT); await store.patchSession(sid, { ...patchBuf, elapsed_ms: ms, status: "dropped", drop_reason: reason });
         walk.off(); releaseDevices(); call = null;
         const r = await store.getSession(sid);
@@ -564,6 +608,7 @@ async function runCall(mint, resumeRec) {
       },
     },
   });
+  window.__lastCall = call;
   await call.start();
 }
 
@@ -603,10 +648,12 @@ function wireSession() {
   $("btnErrAnyway").onclick = () => { skipMicCheckOnce = true; startSession(lastResumeRec, lastKind); };
   $("btnErrHome").onclick = () => { clearErr(); location.hash = "#/home"; };
   $("btnStart").onclick = async () => {
+    if (starting || (call && !call.closed)) return;
     const res = await store.findResumable().catch(() => null);
     startSession(res || null, "full"); // a recent dropped call is resumed rather than starting a second session
   };
   $("btnQuick3").onclick = async () => {
+    if (starting || (call && !call.closed)) return;
     const res = await store.findResumable().catch(() => null);
     startSession(res || null, "quick3");
   };

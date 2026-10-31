@@ -1,6 +1,6 @@
 // sw.js: cache the app shell + phrases.json so the Phrases tab works offline.
 // NEVER caches API calls: Supabase (REST, auth, edge functions) and OpenAI always go to the network.
-const VERSION = "evc-v6";
+const VERSION = "evc-v7";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "realtime.js", "gemini-live.js", "session-store.js", "config.js", "mock.js",
   "manifest.webmanifest", "phrases.json", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 const CDN = "cdn.jsdelivr.net"; // the Supabase JS module: a static library, cached so the app shell boots offline

@@ -31,6 +31,7 @@ import { GEMINI_WS_URL, TIME_CHECKS, HARD_STOP_S } from "./config.js";
 import { TokenExpiredError, NetworkError, stripNotes, fmt, heSaidLeaving, REFUSE_NOT_LEAVING } from "./realtime.js";
 
 const FINAL_WAIT_MS = 40000;    // hang up this long after the final note if the coach has not replied (as v1.5)
+const ECHO_TAIL_S = 0.4;       // mic stays closed this long after the coach stops (room echo)
 const NOTE_IDLE_MS = 1500;      // a producer note waits for this much quiet on the line...
 const NOTE_MAX_WAIT_MS = 10000; // ...a switch note (turnComplete false) goes anyway after this, between coach turns
 const NOTE_MAX_WAIT_SPEAK_MS = 25000; // a close/final note (turnComplete true makes the coach answer) waits up to this for quiet
@@ -213,6 +214,9 @@ export class GeminiCall {
 
   sendAudio(buf) {
     if (this.closed || !this.ready || this.reconnecting) return; // frames during a reconnect are dropped
+    // 31 Oct: half-duplex. On the iPhone speaker the coach's own voice came back through the mic and was transcribed as
+    // Vivek's words, so no mic audio goes up while coach audio is playing (+ a short tail for the room echo).
+    if (this.ctx && (this.sources.size > 0 || this.ctx.currentTime < this.playhead + ECHO_TAIL_S)) { this.stats.framesGated = (this.stats.framesGated || 0) + 1; return; }
     if (this.send({ realtimeInput: { audio: { data: bytesToB64(buf), mimeType: "audio/pcm;rate=16000" } } })) {
       this.stats.framesSent++; this.stats.bytesSent += buf.byteLength;
     }

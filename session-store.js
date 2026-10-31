@@ -100,10 +100,15 @@ export async function allSessions() {
 
 // A session that dropped (or was left "live" by a killed tab) less than 10 minutes ago can be resumed
 // with the same session_id and plan.
+const LIVE_STALE_MS = 30000;
 export async function findResumable() {
   const now = Date.now();
   for (const s of await allSessions()) {
-    if ((s.status === "dropped" || s.status === "live") && now - (s.last_activity || 0) < RESUME_WINDOW_MS) return s;
+    // 31 Oct: a "live" session counts only when stale (no activity for 30 s = the page died mid-call). A fresh "live"
+    // one is the call in progress; treating it as resumable opened a SECOND voice session on top of the first.
+    const age = now - (s.last_activity || 0);
+    if (s.status === "dropped" && age < RESUME_WINDOW_MS) return s;
+    if (s.status === "live" && age > LIVE_STALE_MS && age < RESUME_WINDOW_MS) return s;
   }
   return null;
 }
