@@ -129,7 +129,10 @@ export async function buildGradePayload(session_id) {
   const live_events = (await getEvents(session_id)).map(e => ({
     phrase_id: e.phrase_id, kind: e.kind, quote: e.quote || "", t_ms: Math.round(e.t_ms || 0),
   }));
-  return { session_id, turns, live_events };
+  // CONTRACT v3.0: the REPLAY list and when its note went, so the grader can tell echoes from cued uses.
+  const rec = await getSession(session_id);
+  const extra = rec && rec.replay_at_ms != null ? { replay_items: rec.replay_items || [], replay_at_ms: Math.round(rec.replay_at_ms) } : {};
+  return { session_id, turns, live_events, ...extra };
 }
 
 // POST to grade-session. postFn(payload) -> {review, phrase_events}. Result is stored with the session.

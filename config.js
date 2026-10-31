@@ -18,12 +18,12 @@ export const VOICE_ENGINES = [
 export const DEFAULT_ENGINE = "gemini";
 export const FREE_LIMIT_MSG = "Free voice limit reached for today. Try Quick 3 later, or switch to the paid voice in Settings.";
 
-// Session timing (seconds). Fallback only: CONTRACT v1.6 puts plan.time_checks [{at_s, kind, text}] (kinds switch |
-// close | final) and plan.hard_stop_s in every mint, and the client uses those. These apply only when the plan has none.
-// Sent verbatim (the switch note gets the "Still to set up" insert). With the final note the client also sends
-// tool_choice "none" and ends the call itself once the coach's reply completes (or 40 s with no reply).
+// Session timing (seconds). Fallback only: the plan's time_checks [{at_s, kind, text}] and hard_stop_s win.
+// CONTRACT v3.0 kinds: replay (text null: the client builds it from replay-plan, replay.js) | close | final.
+// (The v1.x "switch" kind is gone; an old plan that still has one is handled as before.) With the final note the client
+// ends the call itself once the coach's reply completes (or 40 s with no reply).
 export const TIME_CHECKS = [
-  { at: 360, kind: "switch", text: "[Producer note: move to the second half now.]" },
+  { at: 300, kind: "replay", text: "", max_items: 5 },
   { at: 540, kind: "close", text: "[Producer note: start closing now. Say you will need to head off soon, name one specific thing he did well today, and ask one last small question. Do not end yet.]" },
   { at: 585, kind: "final", text: "[Producer note: final turn. One thing to try tomorrow and a question about his real life for tomorrow. This is the last thing you say; the producer ends the call.]" },
 ];

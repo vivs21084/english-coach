@@ -4,7 +4,8 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY, FUNCTIONS_URL, DAILY_TARGET_DAYS, SPEE
 import { CoachCall, webrtcConnect, TokenExpiredError, NetworkError, fmt } from "./realtime.js";
 import { GeminiCall, QuotaError } from "./gemini-live.js";
 import * as store from "./session-store.js";
-import { MOCK, MOCK_MIC, mockClock, mockConnect, mockMint, mockGrade, mockData, MockGeminiWS } from "./mock.js";
+import { MOCK, MOCK_MIC, mockClock, mockConnect, mockMint, mockGrade, mockReplayPlan, mockData, MockGeminiWS } from "./mock.js";
+import { mentions } from "./replay.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -117,6 +118,8 @@ const api = {
     return { error };
   },
   grade(payload) { return MOCK ? mockGrade(payload) : api.post("grade-session", payload); },
+  // CONTRACT v3.0: {session_id, turns, max_items} -> {items:[{you_said, natural, phrase_id, why}], model, ms}
+  replayPlan(body) { return MOCK ? mockReplayPlan(body) : api.post("replay-plan", body); },
   async dailyLog(fromIso) {
     if (MOCK) return mockData.dailyLog(fromIso);
     const { data, error } = await sb.from("daily_log").select("date,practised,real_person,source").gte("date", fromIso);
@@ -368,11 +371,43 @@ let call = null, mic = null, actx = null, wakeLock = null, meterRaf = 0, current
 const STATE_TEXT = { connecting: "Connecting…", listening: "Your turn", you: "Listening…", thinking: "Thinking…",
   speaking: "Coach is talking", closing: "Wrapping up", ended: "Done", dropped: "Call dropped" };
 
+// v3.0: during the REPLAY half the label says what the half is for; the turn state moves to the sub-line.
+const REPLAY_LABEL = "Replay: say it the local way";
+let phase = "talk", lastOrbState = "connecting";
 function setOrb(state) {
+  lastOrbState = state;
   $("orb").className = "orb " + state;
-  $("stateLabel").textContent = STATE_TEXT[state] || state;
-  $("stateSub").textContent = state === "listening" ? "Just talk. Take your time." : "";
+  const replayOn = phase === "replay" && !["ended", "dropped", "closing", "connecting"].includes(state);
+  $("stateLabel").textContent = replayOn ? REPLAY_LABEL : STATE_TEXT[state] || state;
+  $("stateSub").textContent = replayOn ? STATE_TEXT[state] || "" : state === "listening" ? "Just talk. Take your time." : "";
   document.body.dataset.callState = state;
+}
+
+// v3.0 replay card: shows the current pair (you said -> natural); moves on when the coach's line mentions the next
+// item's natural text (>= 60 % word overlap). Best effort: the full list is on the review card.
+const replayCard = {
+  items: [], i: 0,
+  show(items) {
+    this.items = items || []; this.i = 0; window.__replayCardLog = [];
+    $("replayCard").hidden = !this.items.length; this.render();
+  },
+  render() {
+    const it = this.items[this.i]; if (!it) return;
+    $("rpSaid").textContent = it.you_said; $("rpNatural").textContent = it.natural;
+    $("rpCount").textContent = `${this.i + 1} of ${this.items.length}`;
+    $("replayCard").dataset.i = String(this.i); (window.__replayCardLog = window.__replayCardLog || []).push(this.i);
+  },
+  caption(role, text) {
+    if (role !== "assistant" || phase !== "replay") return;
+    const next = this.items[this.i + 1];
+    if (next && mentions(text, next.natural)) { this.i++; this.render(); }
+  },
+  off() { this.items = []; this.i = 0; $("replayCard").hidden = true; },
+};
+function setPhase(p) {
+  phase = p; document.body.dataset.phase = p;
+  if (p !== "replay") replayCard.off();
+  setOrb(lastOrbState);
 }
 
 function showErr(title, text, opts = {}) {
@@ -555,10 +590,18 @@ async function runCall(mint, resumeRec) {
   const walk = workWalk(rec.kind === "work", (rec.plan && (rec.plan.walkthrough && rec.plan.walkthrough.prompt)) || "");
   await store.putSession(rec);
   const resumeTurns = sameSession ? (await store.getTurns(sid)).map(t => ({ role: t.role, text: t.text })) : [];
+  // v3.0: a resume inside the REPLAY half keeps its list and the card.
+  const checks = (rec.plan && rec.plan.time_checks) || [], sent = new Set((sameSession ? rec.sent_checks || [] : []).map(Number));
+  const closeAt = (checks.find(c => c.kind === "close") || {}).at_s;
+  setPhase(sameSession && rec.replay_at_ms != null && !(closeAt != null && sent.has(Number(closeAt))) ? "replay" : "talk");
+  if (phase === "replay") replayCard.show(rec.replay_items || []);
 
   // Debounced session patches (elapsed, next_idx, sent_checks) so a crash keeps the clock.
   let patchBuf = {}, patchT = 0;
-  const patch = (p) => { Object.assign(patchBuf, p); clearTimeout(patchT); patchT = setTimeout(() => { const b = patchBuf; patchBuf = {}; store.patchSession(sid, b).catch(() => {}); }, 300); };
+  // v3.0: a sent note (sent_checks) and the replay list are written at once, not debounced: a call that keeps talking
+  // resets the 300 ms timer, and a crash then must not re-send a note or lose the list.
+  const flushPatch = () => { const b = patchBuf; patchBuf = {}; store.patchSession(sid, b).catch(() => {}); };
+  const patch = (p) => { Object.assign(patchBuf, p); clearTimeout(patchT); if ("sent_checks" in p || "replay_items" in p) flushPatch(); else patchT = setTimeout(flushPatch, 300); };
 
   // v0.3: the server picks the engine (profiles.voice_engine); a mint with a Gemini token/ws_url and no engine is Gemini too.
   const engine = mint.engine || (mint.ws_url || mint.token ? "gemini" : "openai");
@@ -578,6 +621,14 @@ async function runCall(mint, resumeRec) {
     sentChecks: sameSession ? rec.sent_checks || [] : [],
     touchedIds: sameSession ? (await store.getEvents(sid)).map(e => e.phrase_id) : [],
     switchSuffix: sameSession ? rec.switch_suffix ?? null : null,
+    replayItems: sameSession ? rec.replay_items ?? null : null,
+    replayAtMs: sameSession ? rec.replay_at_ms ?? null : null,
+    // v3.0: his turns so far, from disk (role, text, t_start_ms, idx), ~15 s before the replay check.
+    replayPlan: async (max_items) => {
+      const turns = (await store.getTurns(sid)).map((t, i) => ({ idx: i, role: t.role, text: String(t.text || "").trim(), t_start_ms: Math.round(t.t_start_ms || 0) }))
+        .filter(t => t.text && (t.role === "user" || t.role === "assistant"));
+      return api.replayPlan({ session_id: sid, turns, max_items });
+    },
     noteEchoCuts: sameSession ? rec.note_echo_cuts || 0 : 0,
     resumeTurns,
     store: { saveTurn: (t) => store.saveTurn(sid, t), saveEvent: (e) => store.saveEvent(sid, e), patch },
@@ -585,17 +636,19 @@ async function runCall(mint, resumeRec) {
       state: (st) => { setOrb(st); walk.state(st); },
       elapsed: (ms) => { window.__elapsedMs = ms; $("elapsed").textContent = fmt(ms); if (ms % 5000 < 300) patch({ elapsed_ms: ms }); },
       tally: (n, m) => { $("tally").textContent = `${n} of ${m}`; },
-      caption: (role, text) => { $(role === "user" ? "capYou" : "capCoach").textContent = text; walk.caption(role, text); },
+      caption: (role, text) => { $(role === "user" ? "capYou" : "capCoach").textContent = text; walk.caption(role, text); replayCard.caption(role, text); },
+      replay: (items) => { setPhase("replay"); replayCard.show(items); },
+      phase: (kind) => { if (kind === "close" || kind === "final") setPhase("close"); },
       log: (m) => { (window.__callLog = window.__callLog || []).push(m); },
       ended: async (reason, ms) => {
         releaseCallLock();
         clearTimeout(patchT); await store.patchSession(sid, { ...patchBuf, elapsed_ms: ms, status: "ended", end_reason: reason, ended_at: Date.now() });
-        walk.off(); releaseDevices(); call = null; finishAndGrade(sid);
+        walk.off(); setPhase("talk"); releaseDevices(); call = null; finishAndGrade(sid);
       },
       dropped: async (reason, ms) => {
         releaseCallLock();
         clearTimeout(patchT); await store.patchSession(sid, { ...patchBuf, elapsed_ms: ms, status: "dropped", drop_reason: reason });
-        walk.off(); releaseDevices(); call = null;
+        walk.off(); setPhase("talk"); releaseDevices(); call = null;
         const r = await store.getSession(sid);
         if (/free voice limit/i.test(reason)) {
           showErr("Free voice limit", FREE_LIMIT_MSG + " Everything you said is saved.", { finish: true, code: "free_quota" });
@@ -706,6 +759,10 @@ async function renderReview(sid) {
   $("rvCarryCard").hidden = !carry; $("rvCarry").textContent = carry ? "Tomorrow: " + carry : "";
   $("rvHook").hidden = !hook; $("rvHook").textContent = hook || "";
   $("rvTip").textContent = rv.tip || "";
+  // v3.0: "Today's lines" = every replay pair (the grader's review.replay_items, else the list the call stored).
+  const lines = (Array.isArray(rv.replay_items) && rv.replay_items.length ? rv.replay_items : rec.replay_items || []).filter(x => x && x.natural);
+  $("rvLinesCard").hidden = !lines.length;
+  $("rvLines").innerHTML = lines.map(x => `<li><span class="fixSaid">${esc(x.you_said)}</span><br><span class="fixBetter">${esc(x.natural)}</span>${x.why ? `<br><span class="small">${esc(x.why)}</span>` : ""}</li>`).join("");
   const parts = [];
   if (rv.wpm) parts.push(`${Math.round(rv.wpm)} words a minute`);
   if (rv.talk_ratio != null) parts.push(`you talked ${Math.round(rv.talk_ratio * 100)}% of the time`);

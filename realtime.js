@@ -19,6 +19,7 @@
 // Transport is injectable so ?mock=1 can run the whole Session screen against a scripted fake data channel.
 
 import { REALTIME_CALLS_URL, TIME_CHECKS, HARD_STOP_S } from "./config.js";
+import { ReplayGate, isReplay } from "./replay.js";
 const FINAL_WAIT_MS = 40000; // v1.5: hang up this long after the final note if the coach has not replied
 
 // CONTRACT v2.1: end_session "user_ended" is honoured only if his words show he is leaving (or he tapped End).
@@ -84,7 +85,7 @@ export class CoachCall {
     // Time checks + hard stop come from the plan (CONTRACT v1.1); config values are the fallback.
     // Checks are keyed by their second mark (at_s), so a resume skips the ones already sent.
     const pcs = Array.isArray(this.plan.time_checks) ? this.plan.time_checks
-      .map(c => ({ at: Number(c.at_s), kind: c.kind, text: String(c.text || "") })).filter(c => c.at > 0 && c.text) : [];
+      .map(c => ({ at: Number(c.at_s), kind: c.kind, text: String(c.text || ""), max_items: c.max_items })).filter(c => c.at > 0 && (c.text || isReplay(c))) : []; // v3.0: replay has text null
     this.timeChecks = pcs.length ? pcs : TIME_CHECKS;
     this.hardStopS = Number(this.plan.hard_stop_s) > 0 ? Number(this.plan.hard_stop_s) : HARD_STOP_S;
     // v1.5: the producer ends the call. After the "final" note (+ tool_choice "none") the client hangs up when the
@@ -103,6 +104,7 @@ export class CoachCall {
     // and the switch-note suffix once computed (stored, so a resumed call sends the same text).
     this.touchedIds = new Set(opts.touchedIds || []);
     this.switchSuffix = opts.switchSuffix ?? null;
+    this.replay = new ReplayGate(this, opts); // v3.0
     this.nextIdx = opts.nextIdx || 0;
     this.items = new Map();          // item_id -> {idx, role, t_start_ms, t_end_ms, text}
     this.seenCalls = new Set();      // call_id dedupe
@@ -174,7 +176,7 @@ export class CoachCall {
     const ms = this.elapsedMs();
     this.on.elapsed && this.on.elapsed(ms);
     for (const c of this.timeChecks) {
-      if (!this.sentChecks.has(c.at) && ms >= c.at * 1000) {
+      if (!this.sentChecks.has(c.at) && (isReplay(c) ? this.replay.ready(c, ms) : ms >= c.at * 1000)) {
         this.sentChecks.add(c.at);
         this.timeCheck(c);
       }
@@ -190,7 +192,7 @@ export class CoachCall {
   timeCheck(c) {
     this.log("time check " + c.at + "s");
     // CONTRACT v1.3: the note goes verbatim; a switch note gets ` Still to set up: "a", "b"` just before its final "]".
-    let text = c.text;
+    let text = isReplay(c) ? this.replay.text() : c.text; // v3.0: built from replay-plan's items
     const isSwitch = c.kind ? c.kind === "switch" : /^\[Producer note: move/.test(c.text);
     if (isSwitch) {
       if (this.switchSuffix == null) {
@@ -207,6 +209,7 @@ export class CoachCall {
       this.afterFinal = true; this.finalAtMs = this.elapsedMs(); this.finalResps = new Set();
     }
     this.systemNote(text);
+    this.on.phase && this.on.phase(c.kind || "");
     if (this.isIdle(2500)) this.send({ type: "response.create" });
     else this.pendingCheckResponse = true; // cleared by the next natural response.created, or sent when the line goes quiet
     this.o.store && this.o.store.patch({ sent_checks: [...this.sentChecks], ...(this.switchSuffix != null ? { switch_suffix: this.switchSuffix } : {}) });

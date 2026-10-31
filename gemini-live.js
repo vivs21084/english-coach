@@ -29,6 +29,7 @@
 
 import { GEMINI_WS_URL, TIME_CHECKS, HARD_STOP_S } from "./config.js";
 import { TokenExpiredError, NetworkError, stripNotes, fmt, heSaidLeaving, REFUSE_NOT_LEAVING } from "./realtime.js";
+import { ReplayGate, isReplay } from "./replay.js";
 
 const FINAL_WAIT_MS = 40000;    // hang up this long after the final note if the coach has not replied (as v1.5)
 const ECHO_TAIL_S = 0.4;       // mic stays closed this long after the coach stops (room echo)
@@ -102,7 +103,7 @@ export class GeminiCall {
     this.produceIds = new Set((this.plan.produce || []).map(p => p.phrase_id));
     this.usedIds = new Set();
     const pcs = Array.isArray(this.plan.time_checks) ? this.plan.time_checks
-      .map(c => ({ at: Number(c.at_s), kind: c.kind, text: String(c.text || "") })).filter(c => c.at > 0 && c.text) : [];
+      .map(c => ({ at: Number(c.at_s), kind: c.kind, text: String(c.text || ""), max_items: c.max_items })).filter(c => c.at > 0 && (c.text || isReplay(c))) : []; // v3.0: replay has text null
     this.timeChecks = pcs.length ? pcs : TIME_CHECKS;
     this.hardStopS = Number(this.plan.hard_stop_s) > 0 ? Number(this.plan.hard_stop_s) : HARD_STOP_S;
     const fin = this.timeChecks.find(c => this.isFinal(c));
@@ -115,6 +116,7 @@ export class GeminiCall {
     this.noteEchoCuts = opts.noteEchoCuts || 0;
     this.touchedIds = new Set(opts.touchedIds || []);
     this.switchSuffix = opts.switchSuffix ?? null;
+    this.replay = new ReplayGate(this, opts); // v3.0
     this.nextIdx = opts.nextIdx || 0;
     this.handleId = opts.resumeHandle || null;
     this.cur = null;        // coach turn in progress {t_start_ms, partial, audio, cut, finalReply}
@@ -266,7 +268,7 @@ export class GeminiCall {
       if (!this.cur && !this.playing() && !this.ending) this.setState("thinking");
     }
     for (const c of this.timeChecks) {
-      if (!this.sentChecks.has(c.at) && !this.queuedChecks.has(c.at) && ms >= c.at * 1000) {
+      if (!this.sentChecks.has(c.at) && !this.queuedChecks.has(c.at) && (isReplay(c) ? this.replay.ready(c, ms) : ms >= c.at * 1000)) {
         this.queuedChecks.add(c.at); this.noteQueue.push({ c, at: this.clock.now() });
       }
     }
@@ -284,7 +286,7 @@ export class GeminiCall {
 
   timeCheck(c) {
     this.log("time check " + c.at + "s");
-    let text = c.text;
+    let text = isReplay(c) ? this.replay.text() : c.text; // v3.0: built from replay-plan's items, turnComplete true
     const isSwitch = this.isSwitchNote(c);
     if (isSwitch) {
       if (this.switchSuffix == null) {
@@ -300,6 +302,7 @@ export class GeminiCall {
     // switch: folds into the context silently (turnComplete false); close + final: the coach answers it now.
     this.note(text, !isSwitch);
     this.sentChecks.add(c.at);
+    this.on.phase && this.on.phase(c.kind || "");
     this.o.store && this.o.store.patch({ sent_checks: [...this.sentChecks], ...(this.switchSuffix != null ? { switch_suffix: this.switchSuffix } : {}) });
   }
 

@@ -150,3 +150,11 @@ select{font:inherit; font-size:16px; width:100%; min-height:50px; padding:12px; 
 #authErr[hidden]{display:none;}
 #linkEmailBox{margin-top:10px;} #linkEmailBox summary{cursor:pointer; color:var(--muted);}
 #linkEmailBox input{margin:8px 0;}
+
+/* v3.0 REPLAY half */
+.replay{text-align:center; border-color:var(--accent);}
+.replay p{margin:.2rem 0 .6rem;}
+.replay .fixBetter{font-size:1.2rem;}
+.lines{padding-left:1.2rem;}
+.lines li{margin:.5rem 0;}
+.replay .fixSaid{text-decoration:none; color:var(--muted);}

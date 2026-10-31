@@ -28,6 +28,10 @@
 //              approved=0 (v_my_access.allowlisted false: Home shows the waiting card with the device code, Start disabled,
 //                      and mint-session answers 403 "no profile: email not in public.allowlist"); default approved.
 //              anonfail=1 (signInAnonymously fails: Home shows the one-line Retry). Set window.__mock.approved = true to approve.
+// v3.0 REPLAY half: the plan has {kind:"replay", text:null} at 300 s (quick3 90 s, no max_items: the client uses 3);
+//              the replay-plan fake answers 3 items. replayfail=1 (replay-plan answers 500: the no-list note must go),
+//              replayslow=1 (replay-plan answers 8 s after the CHECK, i.e. 23 s after the request: the client must not wait
+//              more than 6 s past the check, and sends the no-list note). After the replay note the coach goes through the items, saying each natural line.
 // nohangup=1 now mints a plan with no final note (old plan), so only the hard stop can end the call.
 // The coach says goodbye + calls end_session only once the client has sent the "final" producer note.
 // Everything the client sends is recorded in window.__mock for tests.
@@ -86,6 +90,29 @@ if (q.get("echo") === "1") {
   // Mid-reply line (a reply that STARTS with "Producer note" is cut instead: see noteecho=1).
   SCRIPT[2].coach = "Right.\nProducer note: start closing now.\nNot bad at all. How'd you go Saturday?";
 }
+// v3.0: what the replay-plan fake returns, and the coach's lines once the replay note arrived (each says one natural line).
+export const REPLAY_ITEMS = [
+  { you_said: "Yes, I am going for cricket on Sunday.", natural: "Yeah, I'm playing cricket Sunday.", phrase_id: null, why: "Say 'playing', drop 'on'" },
+  { you_said: "Is it big week for you?", natural: "Big week for you?", phrase_id: "3c274ac2a227", why: "Locals drop 'is it'" },
+  { you_said: "Yeah she did, she swam really well.", natural: "Yeah, she smashed it.", phrase_id: null, why: "Shorter and more casual" },
+];
+const REPLAY_LINES = [
+  "Okay, quick replay. Cricket on Sunday. Locals say: Yeah, I'm playing cricket Sunday. Your go.",
+  "Nice. Next one: Big week for you? Say it back.",
+  "Good. Last one: Yeah, she smashed it. Your go.",
+];
+function replayLine(closing) {
+  const n = M.replayLineN || 0;
+  if (!M.replaySeen || closing || n >= REPLAY_LINES.length) return null;
+  M.replayLineN = n + 1; return REPLAY_LINES[n];
+}
+export async function mockReplayPlan(body) {
+  const r = { body, ms: window.__elapsedMs || 0 }; (M.replayReqs = M.replayReqs || []).push(r);
+  if (q.get("replayfail") === "1") throw Object.assign(new Error("replay-plan failed (500)"), { status: 500 });
+  if (q.get("replayslow") === "1") await wait(23000); // 8 s after the check (asked 15 s before it)
+  r.answeredMs = window.__elapsedMs || 0;
+  return { items: REPLAY_ITEMS.slice(0, body.max_items || 5), model: "mock", ms: 12 };
+}
 const LOOP_FILLER = [
   { coach: "Nice. And what's Reya up to this week?" },
   { user: "Tennis on Wednesday and a school project." },
@@ -109,6 +136,7 @@ export function mockConnect() {
         if (/^\[Producer note: start closing/.test(t)) M.closeSeen = true;
         if (/^\[Producer note: final/.test(t)) M.finalSeen = true;
         if (/^\[Producer note: move/.test(t)) M.switchSeen = true;
+        if (/^\[Producer note: replay time/.test(t)) M.replaySeen = true;
       }
       if (ev.type === "session.update" && ev.session && ev.session.tool_choice === "none") {
         M.toolNone = true; M.toolNoneAt = M.sent.length - 1;
@@ -141,7 +169,7 @@ export function mockConnect() {
     if (busy || closed) return;
     if (MUTE && M.finalSeen) { M.mutedAfterFinal = true; return; } // silent coach after the final note
     busy = true;
-    if (NOTE_ECHO && M.switchSeen && !M.echoDone) { // v1.6: the coach starts reading the producer note aloud
+    if (NOTE_ECHO && (M.switchSeen || M.replaySeen) && !M.echoDone) { // v1.6: the coach starts reading the producer note aloud
       M.echoDone = true; cancelled = false;
       const rid = "resp_" + (++respSeq), item_id = "msg_" + (++itemSeq);
       emit({ type: "response.created", response: { id: rid } });
@@ -173,6 +201,7 @@ export function mockConnect() {
     let line = s.coach;
     const closing = !NO_HANGUP && !!M.finalSeen;
     if (EARLY_END && M.closeSeen && !M.finalSeen && !M.earlyEndSent) { M.earlyEndSent = true; output.push(toolCall(rid, { name: "end_session", args: { reason: "done" } })); }
+    line = replayLine(closing) || line;
     if (closing) line = "Good one today, Vivek. You nailed 'How ya going' and 'Good weekend'. One thing: say 'I'm playing cricket Sunday'. Catch ya later!";
     const item_id = "msg_" + (++itemSeq);
     emit({ type: "output_audio_buffer.started", response_id: rid });
@@ -240,7 +269,7 @@ export async function mockMint(resumeId, kind = "full") {
   j.plan.kind = MINT_KIND;
   if (MINT_KIND === "work") { j.plan.walkthrough = { prompt: "the invoice automation flow" }; j.plan.scenario.title = "Standup: invoice automation"; }
   if (NO_HANGUP) j.plan.time_checks = j.plan.time_checks.filter(c => c.kind !== "final");
-  if (MINT_KIND === "quick3") { j.plan.minutes = 3; j.plan.time_checks = j.plan.time_checks_quick3; j.plan.hard_stop_s = 240; }
+  if (MINT_KIND === "quick3") { j.plan.minutes = 3; j.plan.time_checks = j.plan.time_checks_quick3; j.plan.hard_stop_s = 230; }
   delete j.plan.time_checks_quick3;
   if (resumeId) j.session_id = resumeId; // backend contract: resume within 10 min keeps the same session_id
   j.expires_at = Math.floor(Date.now() / 1000) + 900;
@@ -252,6 +281,9 @@ export async function mockGrade(payload) {
   M.gradePayload = payload;
   const j = await (await fetch("eval/mock-grade.json", { cache: "no-store" })).json();
   if (MINT_KIND === "work") j.review.score_total = 38; // the /50 score exists but must never reach the review card
+  // v3.0: the grader returns the replay pairs on the review (marked so the test can tell them from the stored copy).
+  if (payload && Array.isArray(payload.replay_items) && payload.replay_items.length && q.get("gradenolines") !== "1")
+    j.review.replay_items = payload.replay_items.map(x => ({ ...x, why: "graded: " + (x.why || "") }));
   return j;
 }
 
@@ -354,7 +386,7 @@ async function gCoachTurn() {
   const ueId = Object.keys(M.calls).reverse().find(k => M.calls[k] === "end_session");
   const honoured = USER_ENDED === 2 && M.ueSent && ueId && /"ok":true/.test(M.answered[ueId] || "");
   if (s.toolOnly && !honoured) { gBusy = false; return gCoachTurn(); }
-  let line = honoured ? "No worries, mate. Catch ya later!" : closing ? CLOSING_LINE : s.coach;
+  let line = honoured ? "No worries, mate. Catch ya later!" : closing ? CLOSING_LINE : replayLine(closing) || s.coach;
   if (THINK && gCoachTurns === 1 && !M.thinkSent) { M.thinkSent = true; line = "Thinking Process: he said swimming went well. Right, so how was swimming?"; }
   if (THINK2 && gCoachTurns === 1 && !M.thinkSent) { M.thinkSent = true; line = "Right. /thought he seems tired today. So how was swimming?"; }
   gCoachTurns++;
@@ -444,6 +476,7 @@ export class MockGeminiWS {
       if (/^\[Producer note: start closing/.test(text)) M.closeSeen = true;
       if (/^\[Producer note: final/.test(text)) M.finalSeen = true;
       if (/^\[Producer note: move/.test(text)) M.switchSeen = true;
+      if (/^\[Producer note: replay time/.test(text)) M.replaySeen = true;
       if (c.turnComplete) queueMicrotask(() => gCoachTurn());
       return;
     }

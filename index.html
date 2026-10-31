@@ -96,6 +96,14 @@
       <p class="small">Take your time. Map it first, then the steps. No clock.</p>
     </div>
 
+    <div id="replayCard" class="card replay" hidden aria-live="polite">
+      <div class="small">You said</div>
+      <p id="rpSaid" class="fixSaid"></p>
+      <div class="small">The local way</div>
+      <p id="rpNatural" class="fixBetter"></p>
+      <div class="small" id="rpCount"></div>
+    </div>
+
     <div id="errBox" class="card err" hidden>
       <b id="errTitle"></b>
       <p id="errText" class="small"></p>
@@ -134,6 +142,7 @@
         <details id="rvMore" hidden><summary>more</summary><ul id="rvMoreList" class="plain more"></ul></details></div>
       <div class="card carry" id="rvCarryCard" hidden><p id="rvCarry"></p></div>
       <p class="hook" id="rvHook" hidden></p>
+      <div class="card" id="rvLinesCard" hidden><h2>Today's lines</h2><ol id="rvLines" class="lines"></ol></div>
       <div class="card"><h2>One tip</h2><p id="rvTip"></p></div>
       <div class="card"><h2>Fluency</h2><p id="rvFluency"></p></div>
       <button class="orange big" id="btnRealPerson">I said one to a real person today</button>
